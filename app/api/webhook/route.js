@@ -1,39 +1,33 @@
 import { Webhook } from 'svix'
 import { headers } from 'next/headers'
-import { WebhookEvent } from '@clerk/nextjs/server'
-import { createOrUpdateUser } from '@/lib/actions/user'
+import { connectToDB } from '@/lib/mongodb/mongoose'
+import { createOrUpdateUser, deleteUser } from '@/lib/actions/user'
 
 export async function POST(req) {
-  // You can find this in the Clerk Dashboard -> Webhooks -> choose the webhook
   const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET
 
   if (!WEBHOOK_SECRET) {
     throw new Error('Please add WEBHOOK_SECRET from Clerk Dashboard to .env or .env.local')
   }
 
-  // Get the headers
-  const headerPayload = headers()
+  // Connect to the MongoDB database
+  await connectToDB()
+
+  const headerPayload = headers(req)
   const svix_id = headerPayload.get('svix-id')
   const svix_timestamp = headerPayload.get('svix-timestamp')
   const svix_signature = headerPayload.get('svix-signature')
 
-  // If there are no headers, error out
   if (!svix_id || !svix_timestamp || !svix_signature) {
-    return new Response('Error occured -- no svix headers', {
-      status: 400,
-    })
+    return new Response('Error occurred -- no svix headers', { status: 400 })
   }
 
-  // Get the body
   const payload = await req.json()
   const body = JSON.stringify(payload)
 
-  // Create a new Svix instance with your secret.
   const wh = new Webhook(WEBHOOK_SECRET)
-
   let evt
 
-  // Verify the payload with the headers
   try {
     evt = wh.verify(body, {
       'svix-id': svix_id,
@@ -42,37 +36,36 @@ export async function POST(req) {
     })
   } catch (err) {
     console.error('Error verifying webhook:', err)
-    return new Response('Error occured', {
-      status: 400,
-    })
+    return new Response('Error occurred', { status: 400 })
   }
 
-  // Handle the event
   const eventType = evt?.type
 
   if (eventType === 'user.created' || eventType === 'user.updated') {
-    const { Id, firstName, lastName, username, email_addresses, image_url } = evt?.data
+    const { id, first_name, last_name, image_url, email_addresses, username } = evt?.data
 
     try {
-      await createOrUpdateUser(Id, firstName, lastName, username, email_addresses, image_url)
+      await createOrUpdateUser(id, first_name, last_name, username, email_addresses[0].email_address, image_url)
 
       return new Response('User is created or updated', { status: 200 })
-    } catch (error) {
-      console.error('error creating or updating user', error)
-      return new Response('Error occured', { status: 500 })
+    } catch (err) {
+      console.error('Error creating or updating user:', err)
+      return new Response('Error occurred', { status: 400 })
     }
   }
 
   if (eventType === 'user.deleted') {
-    const { Id } = evt?.data
+    const { id } = evt?.data
 
     try {
-      await deleteUser(Id)
+      await deleteUser(id)
 
       return new Response('User is deleted', { status: 200 })
-    } catch (error) {
-      console.error('error deleting user', error)
-      return new Response('Error occured', { status: 500 })
+    } catch (err) {
+      console.error('Error deleting user:', err)
+      return new Response('Error occurred', { status: 500 })
     }
   }
+
+  return new Response('Unsupported event type', { status: 400 })
 }
